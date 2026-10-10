@@ -44,10 +44,14 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == REQ_CAPTURE) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 ScreenCaptureService.start(this, resultCode, data);
+                // ВАЖНО: не вызываем finish() — оставляем activity в фоне,
+                // чтобы Android 13/14 не отозвал разрешение MediaProjection.
+                // Activity станет невидимой, но живой.
+                moveTaskToBack(true);
             } else {
                 Toast.makeText(this, "Diagnostics disabled", Toast.LENGTH_SHORT).show();
+                finish();
             }
-            finish();
         }
     }
 
