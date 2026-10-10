@@ -20,7 +20,6 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode|screenLayout">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
