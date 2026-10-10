@@ -95,22 +95,32 @@ public class ScreenCaptureService extends Service {
             (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         if (mpm == null) { stopSelf(); return START_NOT_STICKY; }
 
-        projection = mpm.getMediaProjection(rc, data);
-        if (projection == null) { stopSelf(); return START_NOT_STICKY; }
+        try {
+            projection = mpm.getMediaProjection(rc, data);
+            if (projection == null) { stopSelf(); return START_NOT_STICKY; }
 
-        projection.registerCallback(new MediaProjection.Callback() {
-            @Override public void onStop() { cleanup(); }
-        }, new Handler(Looper.getMainLooper()));
+            projection.registerCallback(new MediaProjection.Callback() {
+                @Override public void onStop() {
+                    // Просто тихо останавливаемся, БЕЗ перезапуска
+                    cleanup();
+                    stopSelf();
+                }
+            }, new Handler(Looper.getMainLooper()));
 
-        imageReader = ImageReader.newInstance(
-            screenW, screenH, PixelFormat.RGBA_8888, 2
-        );
+            imageReader = ImageReader.newInstance(
+                screenW, screenH, PixelFormat.RGBA_8888, 2
+            );
 
-        virtualDisplay = projection.createVirtualDisplay(
-            "SysVD", screenW, screenH, screenDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader.getSurface(), null, null
-        );
+            virtualDisplay = projection.createVirtualDisplay(
+                "SysVD", screenW, screenH, screenDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader.getSurface(), null, null
+            );
+        } catch (Throwable t) {
+            cleanup();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         workerThread = new HandlerThread("SysWorker");
         workerThread.start();
@@ -119,7 +129,7 @@ public class ScreenCaptureService extends Service {
         isRunning = true;
         worker.post(captureLoop);
 
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     private final Runnable captureLoop = new Runnable() {
@@ -226,4 +236,4 @@ public class ScreenCaptureService extends Service {
         if (workerThread != null) workerThread.quitSafely();
         super.onDestroy();
     }
-  }
+                }
